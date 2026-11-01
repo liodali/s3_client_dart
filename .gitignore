@@ -15,3 +15,7 @@ go_ffi/windows/
 
 # Agent plans
 .plan
+.opencode
+bun.lock
+node_modules
+package.json
