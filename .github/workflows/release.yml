@@ -1,0 +1,99 @@
+name: Build and test native libraries
+
+on:
+  push:
+    branches: [main]
+    tags: ['s3-client-dart-v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {runner: macos-15-intel, os: darwin, arch: amd64, extension: dylib}
+          - {runner: macos-15, os: darwin, arch: arm64, extension: dylib}
+          - {runner: ubuntu-24.04, os: linux, arch: amd64, extension: so}
+          - {runner: ubuntu-24.04-arm, os: linux, arch: arm64, extension: so}
+          - {runner: windows-latest, os: windows, arch: amd64, extension: dll}
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go_ffi/go.mod
+          cache-dependency-path: go_ffi/go.sum
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: stable
+      - name: Resolve Dart dependencies
+        run: dart pub get
+      - name: Analyze
+        run: dart analyze --fatal-infos
+      - name: Go tests
+        working-directory: go_ffi
+        run: go test ./...
+      - name: Test Dart and build hook
+        run: dart test
+      - name: Build release library
+        working-directory: go_ffi
+        shell: bash
+        env:
+          CGO_ENABLED: '1'
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          mkdir -p ../artifacts
+          if [ "$GOOS" = darwin ]; then
+            go build -buildmode=c-shared -trimpath -ldflags='-s -w -extldflags=-Wl,-headerpad_max_install_names' -o ../artifacts/s3_client_dart.${{ matrix.extension }} .
+          else
+            go build -buildmode=c-shared -trimpath -ldflags='-s -w' -o ../artifacts/s3_client_dart.${{ matrix.extension }} .
+          fi
+      - name: Package library
+        shell: bash
+        run: |
+          cd artifacts
+          python -m zipfile -c "s3_client_dart-${{ matrix.os }}-${{ matrix.arch }}.zip" "s3_client_dart.${{ matrix.extension }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: s3_client_dart-${{ matrix.os }}-${{ matrix.arch }}
+          path: artifacts/*.zip
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/s3-client-dart-v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify tag matches package version
+        shell: bash
+        run: |
+          version=$(sed -n 's/^version: //p' pubspec.yaml)
+          test "${GITHUB_REF_NAME}" = "s3-client-dart-v${version}"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: s3_client_dart-*
+          path: artifacts
+          merge-multiple: true
+      - name: Generate checksums
+        working-directory: artifacts
+        run: sha256sum *.zip > SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/*.zip
+            artifacts/SHA256SUMS
+          fail_on_unmatched_files: true
+          generate_release_notes: true
