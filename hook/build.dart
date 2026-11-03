@@ -43,7 +43,7 @@ void main(List<String> args) async {
     final out = input.outputDirectory.resolve('s3_client_dart.$extension');
     await Directory.fromUri(input.outputDirectory).create(recursive: true);
     final sourceDir = input.packageRoot.resolve('go_ffi/');
-    for (final name in ['main.go', 'go.mod', 'go.sum']) {
+    for (final name in ['main.go', 's3ops.go', 'go.mod', 'go.sum']) {
       output.dependencies.add(sourceDir.resolve(name));
     }
     final ProcessResult result;

@@ -8,8 +8,6 @@ import "C"
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -19,31 +17,14 @@ import (
 	"unsafe"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/aws/smithy-go"
 )
-
-type bucket struct {
-	name   string
-	client *s3.Client
-}
 
 var clients sync.Map
 var nextID atomic.Uint64
 
-type response struct {
-	Value any    `json:"value,omitempty"`
-	Error string `json:"error,omitempty"`
-}
-
 func result(value any, err error) *C.char {
-	r := response{Value: value}
-	if err != nil {
-		r.Error = err.Error()
-	}
-	b, _ := json.Marshal(r)
-	return C.CString(string(b))
+	return C.CString(encode(value, err))
 }
 func get(id C.uint64_t) (*bucket, error) {
 	v, ok := clients.Load(uint64(id))
@@ -58,23 +39,12 @@ func s3Free(p *C.char) { C.free(unsafe.Pointer(p)) }
 
 //export s3Create
 func s3Create(endpoint, name, key, secret, token, region, account *C.char) *C.char {
-	cfg, err := config.LoadDefaultConfig(context.Background(), config.WithRegion(C.GoString(region)))
+	b, err := newBucket(C.GoString(endpoint), C.GoString(name), C.GoString(key), C.GoString(secret), C.GoString(token), C.GoString(region), C.GoString(account))
 	if err != nil {
 		return result(nil, err)
 	}
-	endpointValue, keyValue, secretValue := C.GoString(endpoint), C.GoString(key), C.GoString(secret)
-	tokenValue, accountValue := C.GoString(token), C.GoString(account)
-	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
-		if endpointValue != "" {
-			o.BaseEndpoint = aws.String(endpointValue)
-		}
-		o.UsePathStyle = true
-		o.Credentials = aws.NewCredentialsCache(aws.CredentialsProviderFunc(func(context.Context) (aws.Credentials, error) {
-			return aws.Credentials{AccessKeyID: keyValue, SecretAccessKey: secretValue, SessionToken: tokenValue, AccountID: accountValue, Source: "static"}, nil
-		}))
-	})
 	id := nextID.Add(1)
-	clients.Store(id, &bucket{name: C.GoString(name), client: client})
+	clients.Store(id, b)
 	return result(id, nil)
 }
 
@@ -82,18 +52,60 @@ func s3Create(endpoint, name, key, secret, token, region, account *C.char) *C.ch
 func s3Close(id C.uint64_t) { clients.Delete(uint64(id)) }
 
 //export s3Upload
-func s3Upload(id C.uint64_t, path, key *C.char) *C.char {
+func s3Upload(id C.uint64_t, path, key, contentType, metadata *C.char) *C.char {
 	b, err := get(id)
 	if err != nil {
 		return result(nil, err)
 	}
-	f, err := os.Open(C.GoString(path))
+	meta, err := parseMetadata(C.GoString(metadata))
 	if err != nil {
 		return result(nil, err)
 	}
-	defer f.Close()
-	_, err = b.client.PutObject(context.Background(), &s3.PutObjectInput{Bucket: aws.String(b.name), Key: aws.String(C.GoString(key)), Body: f})
+	err = uploadFile(context.Background(), b, C.GoString(path), C.GoString(key), C.GoString(contentType), meta)
 	return result(C.GoString(key), err)
+}
+
+//export s3Head
+func s3Head(id C.uint64_t, key *C.char) *C.char {
+	b, err := get(id)
+	if err != nil {
+		return result(nil, err)
+	}
+	out, err := headObject(context.Background(), b, C.GoString(key))
+	if err != nil {
+		return result(nil, err)
+	}
+	return result(out, nil)
+}
+
+//export s3ListPage
+func s3ListPage(id C.uint64_t, prefix, delimiter *C.char, pageSize C.int32_t, token *C.char) *C.char {
+	b, err := get(id)
+	if err != nil {
+		return result(nil, err)
+	}
+	out, err := listPage(context.Background(), b, C.GoString(prefix), C.GoString(delimiter), int32(pageSize), C.GoString(token))
+	if err != nil {
+		return result(nil, err)
+	}
+	return result(out, nil)
+}
+
+//export s3PresignPut
+func s3PresignPut(id C.uint64_t, key *C.char, seconds C.int32_t, contentType, metadata *C.char) *C.char {
+	b, err := get(id)
+	if err != nil {
+		return result(nil, err)
+	}
+	meta, err := parseMetadata(C.GoString(metadata))
+	if err != nil {
+		return result(nil, err)
+	}
+	out, err := presignPut(context.Background(), b, C.GoString(key), int32(seconds), C.GoString(contentType), meta)
+	if err != nil {
+		return result(nil, err)
+	}
+	return result(out, nil)
 }
 
 //export s3List
@@ -172,8 +184,7 @@ func s3Exists(id C.uint64_t, key *C.char) *C.char {
 	if err == nil {
 		return result(true, nil)
 	}
-	var apiErr smithy.APIError
-	if errors.As(err, &apiErr) && (apiErr.ErrorCode() == "NotFound" || apiErr.ErrorCode() == "NoSuchKey" || apiErr.ErrorCode() == "404") {
+	if kind, _, _ := classify(err); kind == "not_found" {
 		return result(false, nil)
 	}
 	return result(nil, err)
