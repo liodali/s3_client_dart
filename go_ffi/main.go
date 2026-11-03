@@ -13,7 +13,6 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
-	"time"
 	"unsafe"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -66,12 +65,12 @@ func s3Upload(id C.uint64_t, path, key, contentType, metadata *C.char) *C.char {
 }
 
 //export s3Head
-func s3Head(id C.uint64_t, key *C.char) *C.char {
+func s3Head(id C.uint64_t, key, versionId *C.char) *C.char {
 	b, err := get(id)
 	if err != nil {
 		return result(nil, err)
 	}
-	out, err := headObject(context.Background(), b, C.GoString(key))
+	out, err := headObject(context.Background(), b, C.GoString(key), C.GoString(versionId))
 	if err != nil {
 		return result(nil, err)
 	}
@@ -129,22 +128,113 @@ func s3List(id C.uint64_t) *C.char {
 }
 
 //export s3Delete
-func s3Delete(id C.uint64_t, key *C.char) *C.char {
+func s3Delete(id C.uint64_t, key, versionId *C.char) *C.char {
 	b, err := get(id)
 	if err != nil {
 		return result(nil, err)
 	}
-	_, err = b.client.DeleteObject(context.Background(), &s3.DeleteObjectInput{Bucket: aws.String(b.name), Key: aws.String(C.GoString(key))})
+	err = deleteObject(context.Background(), b, C.GoString(key), C.GoString(versionId))
 	return result("", err)
 }
 
-//export s3Download
-func s3Download(id C.uint64_t, key, path *C.char) *C.char {
+//export s3DeleteObjects
+func s3DeleteObjects(id C.uint64_t, payload *C.char) *C.char {
 	b, err := get(id)
 	if err != nil {
 		return result(nil, err)
 	}
-	obj, err := b.client.GetObject(context.Background(), &s3.GetObjectInput{Bucket: aws.String(b.name), Key: aws.String(C.GoString(key))})
+	items, err := parseDeletePayload(C.GoString(payload))
+	if err != nil {
+		return result(nil, err)
+	}
+	out, err := deleteObjects(context.Background(), b, items)
+	if err != nil {
+		return result(nil, err)
+	}
+	return result(out, nil)
+}
+
+//export s3CopyObject
+func s3CopyObject(id C.uint64_t, sourceBucket, sourceKey, destinationKey, sourceVersionId, contentType, metadata *C.char, replaceMetadata C.int32_t) *C.char {
+	b, err := get(id)
+	if err != nil {
+		return result(nil, err)
+	}
+	meta, err := parseMetadata(C.GoString(metadata))
+	if err != nil {
+		return result(nil, err)
+	}
+	out, err := copyObject(context.Background(), b, C.GoString(sourceBucket), C.GoString(sourceKey), C.GoString(destinationKey), C.GoString(sourceVersionId), replaceMetadata != 0, C.GoString(contentType), meta)
+	if err != nil {
+		return result(nil, err)
+	}
+	return result(out, nil)
+}
+
+//export s3ListVersions
+func s3ListVersions(id C.uint64_t, prefix, keyMarker, versionIdMarker *C.char, pageSize C.int32_t) *C.char {
+	b, err := get(id)
+	if err != nil {
+		return result(nil, err)
+	}
+	out, err := listVersions(context.Background(), b, C.GoString(prefix), int32(pageSize), C.GoString(keyMarker), C.GoString(versionIdMarker))
+	if err != nil {
+		return result(nil, err)
+	}
+	return result(out, nil)
+}
+
+//export s3UploadBytes
+func s3UploadBytes(id C.uint64_t, key, contentType, metadata *C.char, data *C.char, length C.int64_t) *C.char {
+	b, err := get(id)
+	if err != nil {
+		return result(nil, err)
+	}
+	meta, err := parseMetadata(C.GoString(metadata))
+	if err != nil {
+		return result(nil, err)
+	}
+	bytes := C.GoBytes(unsafe.Pointer(data), C.int(length))
+	err = uploadBytes(context.Background(), b, C.GoString(key), C.GoString(contentType), meta, bytes)
+	return result(C.GoString(key), err)
+}
+
+//export s3DownloadBytes
+func s3DownloadBytes(id C.uint64_t, key, versionId *C.char, maxBytes C.int64_t, outLen *C.int64_t) *C.char {
+	b, err := get(id)
+	if err != nil {
+		*outLen = -1
+		return result(nil, err)
+	}
+	data, err := downloadBytes(context.Background(), b, C.GoString(key), C.GoString(versionId), int64(maxBytes))
+	if err != nil {
+		*outLen = -1
+		return result(nil, err)
+	}
+	// Raw bytes cross the ABI, not the JSON envelope: outLen carries the
+	// length, -1 signals a JSON error payload. The buffer is allocated with
+	// malloc and released by the caller through s3Free.
+	p := C.malloc(C.size_t(max(int(len(data)), 1)))
+	if p == nil {
+		*outLen = -1
+		return result(nil, fmt.Errorf("out of memory allocating %d bytes", len(data)))
+	}
+	copy(unsafe.Slice((*byte)(p), max(len(data), 1)), data)
+	*outLen = C.int64_t(len(data))
+	return (*C.char)(p)
+}
+
+//export s3Download
+func s3Download(id C.uint64_t, key, path, versionId *C.char) *C.char {
+	b, err := get(id)
+	if err != nil {
+		return result(nil, err)
+	}
+	in := &s3.GetObjectInput{Bucket: aws.String(b.name), Key: aws.String(C.GoString(key))}
+	if version := C.GoString(versionId); version != "" {
+		in.VersionId = aws.String(version)
+	}
+	obj, err := b.client.GetObject(context.Background(), in)
 	if err != nil {
 		return result(nil, err)
 	}
@@ -162,16 +252,16 @@ func s3Download(id C.uint64_t, key, path *C.char) *C.char {
 }
 
 //export s3Presign
-func s3Presign(id C.uint64_t, key *C.char, seconds C.int32_t) *C.char {
+func s3Presign(id C.uint64_t, key *C.char, seconds C.int32_t, versionId *C.char) *C.char {
 	b, err := get(id)
 	if err != nil {
 		return result(nil, err)
 	}
-	out, err := s3.NewPresignClient(b.client).PresignGetObject(context.Background(), &s3.GetObjectInput{Bucket: aws.String(b.name), Key: aws.String(C.GoString(key))}, func(o *s3.PresignOptions) { o.Expires = time.Duration(seconds) * time.Second })
+	out, err := presignGet(context.Background(), b, C.GoString(key), int32(seconds), C.GoString(versionId))
 	if err != nil {
 		return result(nil, err)
 	}
-	return result(out.URL, nil)
+	return result(out, nil)
 }
 
 //export s3Exists
