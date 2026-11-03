@@ -4,7 +4,9 @@
 - Add `listObjectsPage` with prefix, delimiter, page size, and continuation token, returning `S3ListPage`. `listObjects()` is unchanged.
 - Add an optional `S3UploadOptions` argument to `upload` for content type and user metadata. Existing calls are unaffected.
 - Add `getPresignedPutUrl`, returning an `S3PresignedRequest` with the URL, method, and headers to send. `getPresignedUrl` (GET) is unchanged.
-
+- `isKeyBucketExist` now also returns `false` for a bare 404 response with no error code.
+- Empty object keys now throw `ArgumentError` in every key-based operation (`upload`, `download`, `deleteObject`, `getPresignedUrl`, `isKeyBucketExist`) instead of failing at the service.
+- Any operation can now throw `S3NotFoundException` or `S3AccessDeniedException`; both extend `S3Exception`, so existing handlers keep working.
 - Build and bundle the Go library using a Dart build hook; Go and a C compiler are required when building.
 - Give each Dart client an independent native client, propagate native errors, and list every page of results.
 - Add desktop CI artifacts and release checksums.

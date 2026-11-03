@@ -8,6 +8,7 @@ pubspec.lock
 example
 *.dylib
 *.so
+go_ffi/go_ffi
 go_ffi/darwin/
 go_ffi/linux/
 go_ffi/windows/

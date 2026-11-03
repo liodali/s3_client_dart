@@ -167,11 +167,11 @@ await (await request.close()).drain<void>();
 
 Notes:
 
-- User metadata keys must be non-empty US-ASCII without whitespace or `:`, unique ignoring case, with printable US-ASCII values; keys plus values may not exceed 2048 bytes. S3 returns metadata keys in lower case. Invalid options throw `ArgumentError`.
+- User metadata keys must be non-empty and contain only HTTP token characters (letters, digits, and ``!#$%&'*+-.^_`|~``), unique ignoring case, with printable US-ASCII values; keys plus values may not exceed 2048 bytes. S3 returns metadata keys in lower case. Invalid options throw `ArgumentError`.
 - The `host` header is omitted from `S3PresignedRequest.headers` because HTTP clients derive it from the URL. The AWS SDK does not sign `Content-Type`, so it is returned for the uploader to send but its value is not enforced by the signature; metadata headers are signed and must match.
 - `ETag` values keep the quotes the service returns. `lastModified` is a UTC `DateTime`.
 
-S3 operation failures throw `S3Exception`, whose `message` contains the native error and whose `code` and `statusCode` carry the provider error code and HTTP status when available. `headObject` throws the subclasses `S3NotFoundException` and `S3AccessDeniedException` so those cases can be told apart from other failures. Calling an operation before initialization or after `close()` throws `StateError`. Invalid presigned URL expiration or page size throws `RangeError`; empty keys and invalid options throw `ArgumentError`.
+S3 operation failures throw `S3Exception`, whose `message` contains the native error and whose `code` and `statusCode` carry the provider error code and HTTP status when available. Any operation can throw the subclasses `S3NotFoundException` (the object or bucket was not found) and `S3AccessDeniedException` (HTTP 401/403), so those cases can be told apart from other failures; both are still caught by `on S3Exception`. Calling an operation before initialization or after `close()` throws `StateError`. Invalid presigned URL expiration or page size throws `RangeError`; empty object keys and invalid options throw `ArgumentError`.
 
 Operations return futures, but the underlying native calls run synchronously on the calling isolate. Use another isolate if a request must not block the calling isolate.
 
