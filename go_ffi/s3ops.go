@@ -120,8 +120,8 @@ func validateMetadata(m map[string]string) error {
 		}
 		seen[lower] = true
 		for _, r := range k {
-			if r <= ' ' || r >= 0x7f || r == ':' {
-				return fmt.Errorf("invalid metadata key %q", k)
+			if !isTokenChar(r) {
+				return fmt.Errorf("invalid metadata key %q: only HTTP token characters are allowed", k)
 			}
 		}
 		for _, r := range v {
@@ -137,9 +137,21 @@ func validateMetadata(m map[string]string) error {
 	return nil
 }
 
+// isTokenChar reports whether r is an RFC 9110 token character, the set
+// allowed in HTTP header names.
+func isTokenChar(r rune) bool {
+	switch {
+	case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		return true
+	}
+	return r < 0x80 && strings.ContainsRune("!#$%&'*+-.^_`|~", r)
+}
+
 func validateContentType(contentType string) error {
-	if strings.ContainsAny(contentType, "\r\n") {
-		return errors.New("invalid content type")
+	for _, r := range contentType {
+		if r < ' ' || r == 0x7f {
+			return errors.New("invalid content type: control characters are not allowed")
+		}
 	}
 	return nil
 }

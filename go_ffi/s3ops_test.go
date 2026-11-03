@@ -136,8 +136,10 @@ func TestUploadSendsContentTypeAndMetadata(t *testing.T) {
 	if header.Get("Content-Type") != "text/plain" || header.Get("X-Amz-Meta-Owner") != "me" {
 		t.Fatalf("unexpected headers: %v", header)
 	}
-	if err := uploadFile(context.Background(), b, path, "k", "a\nb", nil); err == nil {
-		t.Fatal("invalid content type must be rejected")
+	for _, bad := range []string{"a\nb", "a\x00b", "a\tb", "a\x7fb"} {
+		if err := uploadFile(context.Background(), b, path, "k", bad, nil); err == nil {
+			t.Fatalf("content type %q must be rejected", bad)
+		}
 	}
 }
 
@@ -181,7 +183,7 @@ func TestParseMetadata(t *testing.T) {
 	if m, err := parseMetadata(`{"a":"b"}`); err != nil || m["a"] != "b" {
 		t.Fatalf("valid input: %v %v", m, err)
 	}
-	bad := []string{`not json`, `{"":"v"}`, `{"a b":"v"}`, `{"a:b":"v"}`, `{"é":"v"}`, "{\"a\":\"\\n\"}", `{"A":"1","a":"2"}`, `{"k":"` + strings.Repeat("x", maxMetadataBytes) + `"}`}
+	bad := []string{`not json`, `{"":"v"}`, `{"a b":"v"}`, `{"a:b":"v"}`, `{"a(b":"v"}`, `{"a/b":"v"}`, `{"a@b":"v"}`, `{"a\"b":"v"}`, `{"é":"v"}`, "{\"a\":\"\\n\"}", `{"A":"1","a":"2"}`, `{"k":"` + strings.Repeat("x", maxMetadataBytes) + `"}`}
 	for _, raw := range bad {
 		if _, err := parseMetadata(raw); err == nil {
 			t.Fatalf("%s must be rejected", raw)
