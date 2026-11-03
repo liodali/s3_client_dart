@@ -49,6 +49,7 @@ class S3Client {
     S3UploadOptions options = const S3UploadOptions(),
   }) async {
     _ensureInitialized();
+    _checkKey(objectKey);
     options.validate();
     return _bindings.upload(filePath, objectKey, options);
   }
@@ -115,6 +116,7 @@ class S3Client {
   /// Returns an empty string on success; throws [S3Exception] on failure
   Future<String> deleteObject(String objectKey) async {
     _ensureInitialized();
+    _checkKey(objectKey);
     return _bindings.delete(objectKey);
   }
 
@@ -126,6 +128,7 @@ class S3Client {
   /// Returns an empty string on success; throws [S3Exception] on failure
   Future<String> download(String objectKey, String destinationPath) async {
     _ensureInitialized();
+    _checkKey(objectKey);
     return _bindings.download(objectKey, destinationPath);
   }
 
@@ -140,6 +143,7 @@ class S3Client {
     int expirationSeconds = 3600,
   }) async {
     _ensureInitialized();
+    _checkKey(objectKey);
     return _bindings.getPresignedUrl(objectKey, expirationSeconds);
   }
 
@@ -176,6 +180,7 @@ class S3Client {
   /// [S3Exception] for other failures
   Future<bool> isKeyBucketExist(String objectKey) async {
     _ensureInitialized();
+    _checkKey(objectKey);
     return _bindings.isKeyBucketExist(objectKey);
   }
 

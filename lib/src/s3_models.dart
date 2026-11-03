@@ -1,3 +1,5 @@
+final _tokenKey = RegExp(r"^[A-Za-z0-9!#$%&'*+\-.^_`|~]+$");
+
 /// Options applied when uploading an object or creating a presigned PUT.
 class S3UploadOptions {
   /// Value stored as the object's `Content-Type`, or `null` to use the
@@ -6,8 +8,8 @@ class S3UploadOptions {
 
   /// User metadata stored with the object (sent as `x-amz-meta-*` headers).
   ///
-  /// Keys must be non-empty US-ASCII without whitespace, control characters,
-  /// or `:`, and must be unique ignoring case (S3 lower-cases them). Values
+  /// Keys must be non-empty and contain only HTTP token characters (letters,
+  /// digits, and ``!#$%&'*+-.^_`|~``), and must be unique ignoring case (S3 lower-cases them). Values
   /// must be printable US-ASCII. Keys plus values are limited to 2048 bytes.
   final Map<String, String> metadata;
 
@@ -16,19 +18,23 @@ class S3UploadOptions {
   /// Throws [ArgumentError] if the options cannot be sent to S3.
   void validate() {
     final type = contentType;
-    if (type != null && (type.isEmpty || type.contains(RegExp(r'[\r\n]')))) {
+    if (type != null &&
+        (type.isEmpty || type.codeUnits.any((c) => c < 0x20 || c == 0x7f))) {
       throw ArgumentError.value(
         type,
         'contentType',
-        'must be non-empty and contain no line breaks',
+        'must be non-empty and contain no control characters',
       );
     }
     var size = 0;
     final seen = <String>{};
     metadata.forEach((key, value) {
-      if (key.isEmpty ||
-          key.codeUnits.any((c) => c <= 0x20 || c >= 0x7f || c == 0x3a)) {
-        throw ArgumentError.value(key, 'metadata', 'invalid metadata key');
+      if (key.isEmpty || !_tokenKey.hasMatch(key)) {
+        throw ArgumentError.value(
+          key,
+          'metadata',
+          'metadata keys may only contain HTTP token characters',
+        );
       }
       if (!seen.add(key.toLowerCase())) {
         throw ArgumentError.value(key, 'metadata', 'duplicate metadata key');
