@@ -89,11 +89,16 @@ Create a client with `S3Client()` and call `initialize(configuration: ...)` befo
 | `upload(filePath, objectKey, options: S3UploadOptions())` | Uploads a local file and returns its object key as `Future<String>`. `options` optionally sets the content type and user metadata. |
 | `listObjects()` | Returns all object keys as `Future<List<String>>`, following pagination. |
 | `listObjectsPage(prefix:, delimiter:, pageSize:, continuationToken:)` | Returns one `S3ListPage` with `objects` (`S3ObjectSummary`), `commonPrefixes`, and `nextContinuationToken` (`null` on the last page). `pageSize` must be 1 to 1000. |
-| `headObject(objectKey)` | Returns `S3ObjectMetadata` (content length, content type, ETag, last-modified time, user metadata, version ID) without downloading the body. Values the service omits are `null`. |
-| `download(objectKey, destinationPath)` | Downloads an object to a local file; returns an empty string on success. |
-| `deleteObject(objectKey)` | Deletes an object; returns an empty string on success. |
+| `headObject(objectKey, versionId:)` | Returns `S3ObjectMetadata` (content length, content type, ETag, last-modified time, user metadata, version ID) without downloading the body. Values the service omits are `null`. |
+| `copyObject(sourceKey, destinationKey, sourceBucket:, sourceVersionId:, metadataBehavior:, options:)` | Copies an object and returns an `S3CopyResult`. Metadata is kept by default; use `S3CopyMetadataBehavior.replace` with `options` to replace it. |
+| `deleteObjects(objects)` | Deletes many `S3ObjectIdentifier` values (key plus optional version ID) and returns an `S3BatchDeleteResult` with per-key successes and failures. Requests are split at 1000 keys. |
+| `listObjectVersionsPage(prefix:, pageSize:, keyMarker:, versionIdMarker:)` | Returns an `S3ListVersionsPage` of versions and delete markers, with markers for the next page. Requires provider versioning support. |
+| `uploadBytes(bytes, objectKey, options:)` | Uploads in-memory bytes, up to `S3Client.hardMaxTransferBytes` (256 MiB). |
+| `downloadBytes(objectKey, versionId:, maxBytes:)` | Downloads an object into memory as `Uint8List`, limited by `maxBytes` (default 16 MiB). |
+| `download(objectKey, destinationPath, versionId:)` | Downloads an object to a local file; returns an empty string on success. |
+| `deleteObject(objectKey, versionId:)` | Deletes an object, or a specific version; returns an empty string on success. |
 | `isKeyBucketExist(objectKey)` | Returns `Future<bool>` indicating whether an object exists. |
-| `getPresignedUrl(objectKey, expirationSeconds: 3600)` | Returns a presigned GET URL as `Future<String>`. Expiration must be between 1 and 604800 seconds. |
+| `getPresignedUrl(objectKey, expirationSeconds: 3600, versionId:)` | Returns a presigned GET URL as `Future<String>`, optionally for one version. Expiration must be between 1 and 604800 seconds. |
 | `getPresignedPutUrl(objectKey, expirationSeconds: 3600, options: S3UploadOptions())` | Returns an `S3PresignedRequest` with the `url`, `method` (`PUT`), and the `headers` the uploader must send. |
 | `close()` | Releases the native client. |
 
@@ -170,6 +175,49 @@ Notes:
 - User metadata keys must be non-empty and contain only HTTP token characters (letters, digits, and ``!#$%&'*+-.^_`|~``), unique ignoring case, with printable US-ASCII values; keys plus values may not exceed 2048 bytes. S3 returns metadata keys in lower case. Invalid options throw `ArgumentError`.
 - The `host` header is omitted from `S3PresignedRequest.headers` because HTTP clients derive it from the URL. The AWS SDK does not sign `Content-Type`, so it is returned for the uploader to send but its value is not enforced by the signature; metadata headers are signed and must match.
 - `ETag` values keep the quotes the service returns. `lastModified` is a UTC `DateTime`.
+
+### Copies, batch deletes, versions, and byte transfers
+
+```dart
+// Copy within the bucket, replacing metadata.
+final copy = await client.copyObject(
+  'reports/old name.pdf',
+  'reports/report.pdf',
+  metadataBehavior: S3CopyMetadataBehavior.replace,
+  options: const S3UploadOptions(contentType: 'application/pdf'),
+);
+print(copy.eTag);
+
+// Delete a batch; failures are reported per key, not thrown.
+final result = await client.deleteObjects([
+  const S3ObjectIdentifier('tmp/a'),
+  const S3ObjectIdentifier('tmp/b', versionId: 'v1'),
+]);
+for (final error in result.errors) {
+  print('${error.key}: ${error.code} ${error.message}');
+}
+
+// Work with a specific version.
+final old = await client.downloadBytes('reports/report.pdf', versionId: 'v1');
+final page = await client.listObjectVersionsPage(prefix: 'reports/');
+for (final version in page.versions) {
+  print('${version.key} ${version.versionId} marker=${version.isDeleteMarker}');
+}
+
+// Small in-memory payloads.
+await client.uploadBytes(
+  Uint8List.fromList(utf8.encode('hello')),
+  'notes/hello.txt',
+  options: const S3UploadOptions(contentType: 'text/plain'),
+);
+```
+
+Notes:
+
+- `deleteObjects` splits requests at 1000 keys and never throws for individual key failures. If a whole chunk request fails, every key in that chunk is listed in `errors` and the remaining chunks still run. Check `result.errors`.
+- `copyObject` percent-encodes unusual source keys. Single-request copies are limited by the provider (5 GB on AWS S3); larger copies throw `S3UnsupportedLargeCopyException`. Multipart copy is not implemented.
+- Version listing requires provider support. Cloudflare R2 does not support object versioning, so `listObjectVersionsPage` returns the provider error there.
+- `uploadBytes` and `downloadBytes` hold the whole payload in memory in both Dart and Go. They are limited to 256 MiB, and `downloadBytes` defaults to 16 MiB, throwing `S3SizeLimitException` above the limit. Use `upload` and `download` for large files; true streaming is a separate design.
 
 S3 operation failures throw `S3Exception`, whose `message` contains the native error and whose `code` and `statusCode` carry the provider error code and HTTP status when available. Any operation can throw the subclasses `S3NotFoundException` (the object or bucket was not found) and `S3AccessDeniedException` (HTTP 401/403), so those cases can be told apart from other failures; both are still caught by `on S3Exception`. Calling an operation before initialization or after `close()` throws `StateError`. Invalid presigned URL expiration or page size throws `RangeError`; empty object keys and invalid options throw `ArgumentError`.
 
