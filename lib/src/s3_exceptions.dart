@@ -30,3 +30,26 @@ class S3AccessDeniedException extends S3Exception {
   @override
   String toString() => 'S3AccessDeniedException: $message';
 }
+
+/// An in-memory transfer exceeded its byte limit.
+class S3SizeLimitException extends S3Exception {
+  S3SizeLimitException(super.message, {super.code, super.statusCode});
+
+  @override
+  String toString() => 'S3SizeLimitException: $message';
+}
+
+/// The copy source is too large for a single `CopyObject` request.
+///
+/// AWS S3 limits single-request copies to 5 GB. Multipart copy is not
+/// implemented; copy large objects with another tool.
+class S3UnsupportedLargeCopyException extends S3Exception {
+  S3UnsupportedLargeCopyException(
+    super.message, {
+    super.code,
+    super.statusCode,
+  });
+
+  @override
+  String toString() => 'S3UnsupportedLargeCopyException: $message';
+}

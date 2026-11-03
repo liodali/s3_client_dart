@@ -179,3 +179,173 @@ class S3PresignedRequest {
         ),
       );
 }
+
+/// An object to delete, optionally at a specific version.
+class S3ObjectIdentifier {
+  final String key;
+  final String? versionId;
+
+  const S3ObjectIdentifier(this.key, {this.versionId});
+
+  Map<String, dynamic> toJson() => {
+    'key': key,
+    if (versionId != null) 'versionId': versionId,
+  };
+}
+
+/// A key that was deleted by `S3Client.deleteObjects`.
+class S3DeletedObject {
+  final String key;
+  final String? versionId;
+
+  const S3DeletedObject({required this.key, this.versionId});
+
+  factory S3DeletedObject.fromJson(Map<String, dynamic> json) =>
+      S3DeletedObject(
+        key: json['key'] as String,
+        versionId: json['versionId'] as String?,
+      );
+}
+
+/// A key that could not be deleted by `S3Client.deleteObjects`.
+class S3DeleteError {
+  final String key;
+  final String? versionId;
+  final String? code;
+  final String? message;
+
+  const S3DeleteError({
+    required this.key,
+    this.versionId,
+    this.code,
+    this.message,
+  });
+
+  factory S3DeleteError.fromJson(Map<String, dynamic> json) => S3DeleteError(
+    key: json['key'] as String,
+    versionId: json['versionId'] as String?,
+    code: json['code'] as String?,
+    message: json['message'] as String?,
+  );
+}
+
+/// Result of a batch delete.
+///
+/// Partial failures are preserved: keys in [errors] were not deleted. If a
+/// whole chunk request fails, every key of that chunk appears in [errors].
+class S3BatchDeleteResult {
+  final List<S3DeletedObject> deleted;
+  final List<S3DeleteError> errors;
+
+  const S3BatchDeleteResult({required this.deleted, required this.errors});
+
+  bool get hasErrors => errors.isNotEmpty;
+
+  factory S3BatchDeleteResult.fromJson(Map<String, dynamic> json) =>
+      S3BatchDeleteResult(
+        deleted: List.unmodifiable(
+          ((json['deleted'] as List?) ?? const []).map(
+            (d) => S3DeletedObject.fromJson(d as Map<String, dynamic>),
+          ),
+        ),
+        errors: List.unmodifiable(
+          ((json['errors'] as List?) ?? const []).map(
+            (e) => S3DeleteError.fromJson(e as Map<String, dynamic>),
+          ),
+        ),
+      );
+}
+
+/// How `S3Client.copyObject` handles metadata.
+enum S3CopyMetadataBehavior {
+  /// Keep the source object's content type and user metadata.
+  copy,
+
+  /// Replace them with the supplied `S3UploadOptions`.
+  replace,
+}
+
+/// Result of `S3Client.copyObject`.
+class S3CopyResult {
+  final String? eTag;
+  final DateTime? lastModified;
+
+  /// Version ID of the new destination object, when versioning is enabled.
+  final String? versionId;
+  final String? copySourceVersionId;
+
+  const S3CopyResult({
+    this.eTag,
+    this.lastModified,
+    this.versionId,
+    this.copySourceVersionId,
+  });
+
+  factory S3CopyResult.fromJson(Map<String, dynamic> json) => S3CopyResult(
+    eTag: json['eTag'] as String?,
+    lastModified: _time(json['lastModified']),
+    versionId: json['versionId'] as String?,
+    copySourceVersionId: json['copySourceVersionId'] as String?,
+  );
+}
+
+/// A version or delete marker in an [S3ListVersionsPage].
+class S3ObjectVersion {
+  final String key;
+  final String versionId;
+  final bool isLatest;
+  final bool isDeleteMarker;
+  final DateTime? lastModified;
+  final String? eTag;
+  final int? size;
+
+  const S3ObjectVersion({
+    required this.key,
+    required this.versionId,
+    required this.isLatest,
+    this.isDeleteMarker = false,
+    this.lastModified,
+    this.eTag,
+    this.size,
+  });
+
+  factory S3ObjectVersion.fromJson(Map<String, dynamic> json) =>
+      S3ObjectVersion(
+        key: json['key'] as String,
+        versionId: json['versionId'] as String,
+        isLatest: json['isLatest'] as bool? ?? false,
+        isDeleteMarker: json['isDeleteMarker'] as bool? ?? false,
+        lastModified: _time(json['lastModified']),
+        eTag: json['eTag'] as String?,
+        size: json['size'] as int?,
+      );
+}
+
+/// One page of object versions returned by `S3Client.listObjectVersionsPage`.
+class S3ListVersionsPage {
+  /// Versions and delete markers; check [S3ObjectVersion.isDeleteMarker].
+  final List<S3ObjectVersion> versions;
+
+  /// Pass both markers to the next call to continue the listing.
+  final String? nextKeyMarker;
+  final String? nextVersionIdMarker;
+
+  const S3ListVersionsPage({
+    required this.versions,
+    this.nextKeyMarker,
+    this.nextVersionIdMarker,
+  });
+
+  bool get hasMore => nextKeyMarker != null;
+
+  factory S3ListVersionsPage.fromJson(Map<String, dynamic> json) =>
+      S3ListVersionsPage(
+        versions: List.unmodifiable(
+          ((json['versions'] as List?) ?? const []).map(
+            (v) => S3ObjectVersion.fromJson(v as Map<String, dynamic>),
+          ),
+        ),
+        nextKeyMarker: json['nextKeyMarker'] as String?,
+        nextVersionIdMarker: json['nextVersionIdMarker'] as String?,
+      );
+}
