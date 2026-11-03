@@ -86,12 +86,15 @@ Create a client with `S3Client()` and call `initialize(configuration: ...)` befo
 
 | Method | Result |
 | --- | --- |
-| `upload(filePath, objectKey)` | Uploads a local file and returns its object key as `Future<String>`. |
+| `upload(filePath, objectKey, options: S3UploadOptions())` | Uploads a local file and returns its object key as `Future<String>`. `options` optionally sets the content type and user metadata. |
 | `listObjects()` | Returns all object keys as `Future<List<String>>`, following pagination. |
+| `listObjectsPage(prefix:, delimiter:, pageSize:, continuationToken:)` | Returns one `S3ListPage` with `objects` (`S3ObjectSummary`), `commonPrefixes`, and `nextContinuationToken` (`null` on the last page). `pageSize` must be 1 to 1000. |
+| `headObject(objectKey)` | Returns `S3ObjectMetadata` (content length, content type, ETag, last-modified time, user metadata, version ID) without downloading the body. Values the service omits are `null`. |
 | `download(objectKey, destinationPath)` | Downloads an object to a local file; returns an empty string on success. |
 | `deleteObject(objectKey)` | Deletes an object; returns an empty string on success. |
 | `isKeyBucketExist(objectKey)` | Returns `Future<bool>` indicating whether an object exists. |
 | `getPresignedUrl(objectKey, expirationSeconds: 3600)` | Returns a presigned GET URL as `Future<String>`. Expiration must be between 1 and 604800 seconds. |
+| `getPresignedPutUrl(objectKey, expirationSeconds: 3600, options: S3UploadOptions())` | Returns an `S3PresignedRequest` with the `url`, `method` (`PUT`), and the `headers` the uploader must send. |
 | `close()` | Releases the native client. |
 
 For example, after initializing `client`:
@@ -112,7 +115,63 @@ await client.download(key, '/tmp/downloaded-report.pdf');
 await client.deleteObject(key);
 ```
 
-S3 operation failures throw `S3Exception`, whose `message` contains the native error. Calling an operation before initialization or after `close()` throws `StateError`. Invalid presigned URL expiration throws `RangeError`.
+### Object information, paging, and uploads
+
+```dart
+// Inspect an object.
+try {
+  final meta = await client.headObject('reports/report.pdf');
+  print('${meta.contentLength} bytes, ${meta.contentType}, ${meta.eTag}');
+  print(meta.userMetadata);
+} on S3NotFoundException {
+  print('no such object');
+} on S3AccessDeniedException {
+  print('permission denied');
+}
+
+// Browse "folders" one page at a time.
+String? token;
+do {
+  final page = await client.listObjectsPage(
+    prefix: 'reports/',
+    delimiter: '/',
+    pageSize: 100,
+    continuationToken: token,
+  );
+  page.commonPrefixes.forEach(print); // sub-folders
+  page.objects.map((o) => '${o.key} ${o.size}').forEach(print);
+  token = page.nextContinuationToken;
+} while (token != null);
+
+// Upload with a content type and user metadata.
+await client.upload(
+  '/tmp/report.pdf',
+  'reports/report.pdf',
+  options: const S3UploadOptions(
+    contentType: 'application/pdf',
+    metadata: {'owner': 'finance'},
+  ),
+);
+
+// Let another party upload with a presigned PUT.
+final put = await client.getPresignedPutUrl(
+  'incoming/photo.jpg',
+  expirationSeconds: 900,
+  options: const S3UploadOptions(contentType: 'image/jpeg'),
+);
+final request = await HttpClient().putUrl(Uri.parse(put.url));
+put.headers.forEach(request.headers.set);
+request.add(await File('/tmp/photo.jpg').readAsBytes());
+await (await request.close()).drain<void>();
+```
+
+Notes:
+
+- User metadata keys must be non-empty US-ASCII without whitespace or `:`, unique ignoring case, with printable US-ASCII values; keys plus values may not exceed 2048 bytes. S3 returns metadata keys in lower case. Invalid options throw `ArgumentError`.
+- The `host` header is omitted from `S3PresignedRequest.headers` because HTTP clients derive it from the URL. The AWS SDK does not sign `Content-Type`, so it is returned for the uploader to send but its value is not enforced by the signature; metadata headers are signed and must match.
+- `ETag` values keep the quotes the service returns. `lastModified` is a UTC `DateTime`.
+
+S3 operation failures throw `S3Exception`, whose `message` contains the native error and whose `code` and `statusCode` carry the provider error code and HTTP status when available. `headObject` throws the subclasses `S3NotFoundException` and `S3AccessDeniedException` so those cases can be told apart from other failures. Calling an operation before initialization or after `close()` throws `StateError`. Invalid presigned URL expiration or page size throws `RangeError`; empty keys and invalid options throw `ArgumentError`.
 
 Operations return futures, but the underlying native calls run synchronously on the calling isolate. Use another isolate if a request must not block the calling isolate.
 
