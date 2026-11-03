@@ -3,7 +3,8 @@ import 'dart:ffi';
 
 import 'package:ffi/ffi.dart';
 
-import 's3_client_dart_base.dart' show S3Exception;
+import 's3_exceptions.dart';
+import 's3_models.dart';
 
 @Native<
   Pointer<Utf8> Function(
@@ -29,10 +30,56 @@ external Pointer<Utf8> _create(
 external void _close(int id);
 @Native<Void Function(Pointer<Utf8>)>(symbol: 's3Free')
 external void _free(Pointer<Utf8> value);
-@Native<Pointer<Utf8> Function(Uint64, Pointer<Utf8>, Pointer<Utf8>)>(
-  symbol: 's3Upload',
-)
-external Pointer<Utf8> _upload(int id, Pointer<Utf8> path, Pointer<Utf8> key);
+@Native<
+  Pointer<Utf8> Function(
+    Uint64,
+    Pointer<Utf8>,
+    Pointer<Utf8>,
+    Pointer<Utf8>,
+    Pointer<Utf8>,
+  )
+>(symbol: 's3Upload')
+external Pointer<Utf8> _upload(
+  int id,
+  Pointer<Utf8> path,
+  Pointer<Utf8> key,
+  Pointer<Utf8> contentType,
+  Pointer<Utf8> metadata,
+);
+@Native<Pointer<Utf8> Function(Uint64, Pointer<Utf8>)>(symbol: 's3Head')
+external Pointer<Utf8> _head(int id, Pointer<Utf8> key);
+@Native<
+  Pointer<Utf8> Function(
+    Uint64,
+    Pointer<Utf8>,
+    Pointer<Utf8>,
+    Int32,
+    Pointer<Utf8>,
+  )
+>(symbol: 's3ListPage')
+external Pointer<Utf8> _listPage(
+  int id,
+  Pointer<Utf8> prefix,
+  Pointer<Utf8> delimiter,
+  int pageSize,
+  Pointer<Utf8> token,
+);
+@Native<
+  Pointer<Utf8> Function(
+    Uint64,
+    Pointer<Utf8>,
+    Int32,
+    Pointer<Utf8>,
+    Pointer<Utf8>,
+  )
+>(symbol: 's3PresignPut')
+external Pointer<Utf8> _presignPut(
+  int id,
+  Pointer<Utf8> key,
+  int seconds,
+  Pointer<Utf8> contentType,
+  Pointer<Utf8> metadata,
+);
 @Native<Pointer<Utf8> Function(Uint64)>(symbol: 's3List')
 external Pointer<Utf8> _list(int id);
 @Native<Pointer<Utf8> Function(Uint64, Pointer<Utf8>)>(symbol: 's3Delete')
@@ -61,7 +108,23 @@ class S3FFIBindings {
     try {
       final response =
           jsonDecode(pointer.toDartString()) as Map<String, dynamic>;
-      if (response['error'] case final String error) throw S3Exception(error);
+      if (response['error'] case final String error) {
+        final code = response['code'] as String?;
+        final status = response['status'] as int?;
+        throw switch (response['kind']) {
+          'not_found' => S3NotFoundException(
+            error,
+            code: code,
+            statusCode: status,
+          ),
+          'access_denied' => S3AccessDeniedException(
+            error,
+            code: code,
+            statusCode: status,
+          ),
+          _ => S3Exception(error, code: code, statusCode: status),
+        };
+      }
       return response['value'];
     } finally {
       _free(pointer);
@@ -103,17 +166,69 @@ class S3FFIBindings {
     if (id != null) _close(id);
   }
 
-  String upload(String path, String key) => using(
+  String upload(String path, String key, S3UploadOptions options) => using(
     (a) =>
         _decode(
               _upload(
                 _client,
                 path.toNativeUtf8(allocator: a),
                 key.toNativeUtf8(allocator: a),
+                (options.contentType ?? '').toNativeUtf8(allocator: a),
+                _metadataJson(options).toNativeUtf8(allocator: a),
               ),
             )
             as String,
   );
+
+  static String _metadataJson(S3UploadOptions options) =>
+      options.metadata.isEmpty ? '' : jsonEncode(options.metadata);
+
+  S3ObjectMetadata head(String key) => using(
+    (a) => S3ObjectMetadata.fromJson(
+      _decode(_head(_client, key.toNativeUtf8(allocator: a)))
+          as Map<String, dynamic>,
+    ),
+  );
+
+  S3ListPage listPage({
+    String? prefix,
+    String? delimiter,
+    int? pageSize,
+    String? continuationToken,
+  }) => using(
+    (a) => S3ListPage.fromJson(
+      _decode(
+            _listPage(
+              _client,
+              (prefix ?? '').toNativeUtf8(allocator: a),
+              (delimiter ?? '').toNativeUtf8(allocator: a),
+              pageSize ?? 0,
+              (continuationToken ?? '').toNativeUtf8(allocator: a),
+            ),
+          )
+          as Map<String, dynamic>,
+    ),
+  );
+
+  S3PresignedRequest presignPut(
+    String key,
+    int seconds,
+    S3UploadOptions options,
+  ) => using(
+    (a) => S3PresignedRequest.fromJson(
+      _decode(
+            _presignPut(
+              _client,
+              key.toNativeUtf8(allocator: a),
+              seconds,
+              (options.contentType ?? '').toNativeUtf8(allocator: a),
+              _metadataJson(options).toNativeUtf8(allocator: a),
+            ),
+          )
+          as Map<String, dynamic>,
+    ),
+  );
+
   List<String> list() =>
       (_decode(_list(_client)) as List<dynamic>).cast<String>();
   String delete(String key) => using(
