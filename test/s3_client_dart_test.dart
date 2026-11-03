@@ -13,6 +13,12 @@ void _serve(SendPort ready) async {
     await request.drain<void>();
     if (request.uri.path == '/__last_put') {
       request.response.write(jsonEncode(lastPut));
+    } else if (request.method == 'GET' &&
+        request.uri.pathSegments.firstOrNull == 'failure') {
+      request.response.statusCode = 500;
+      request.response.write(
+        '<Error><Code>InternalError</Code><Message>failure</Message></Error>',
+      );
     } else if (request.method == 'PUT') {
       lastPut = {};
       request.headers.forEach((name, values) => lastPut[name] = values.join());
@@ -193,6 +199,24 @@ void main() {
     });
   });
 
+  test('every key-based operation rejects an empty key', () async {
+    final client = S3Client()
+      ..initialize(configuration: _config(port, 'first'));
+    addTearDown(client.close);
+    await expectLater(client.upload('/tmp/x', ''), throwsArgumentError);
+    await expectLater(client.download('', '/tmp/x'), throwsArgumentError);
+    await expectLater(client.deleteObject(''), throwsArgumentError);
+    await expectLater(client.getPresignedUrl(''), throwsArgumentError);
+    await expectLater(client.isKeyBucketExist(''), throwsArgumentError);
+  });
+
+  test('isKeyBucketExist returns false for a missing object', () async {
+    final client = S3Client()
+      ..initialize(configuration: _config(port, 'first'));
+    addTearDown(client.close);
+    expect(await client.isKeyBucketExist('missing'), isFalse);
+  });
+
   group('listObjectsPage', () {
     late S3Client client;
     setUp(() {
@@ -251,7 +275,7 @@ void main() {
         ..initialize(configuration: _config(port, 'failure'));
       addTearDown(failing.close);
       await expectLater(
-        failing.listObjectsPage(),
+        failing.listObjectsPage(prefix: 'x'),
         throwsA(isA<S3Exception>()),
       );
     });
@@ -304,6 +328,12 @@ void main() {
       for (final options in [
         const S3UploadOptions(contentType: ''),
         const S3UploadOptions(contentType: 'a\nb'),
+        const S3UploadOptions(contentType: 'a\x00b'),
+        const S3UploadOptions(contentType: 'a\tb'),
+        const S3UploadOptions(metadata: {'a(b': 'v'}),
+        const S3UploadOptions(metadata: {'a/b': 'v'}),
+        const S3UploadOptions(metadata: {'a@b': 'v'}),
+        const S3UploadOptions(metadata: {'a"b': 'v'}),
         const S3UploadOptions(metadata: {'': 'v'}),
         const S3UploadOptions(metadata: {'a b': 'v'}),
         const S3UploadOptions(metadata: {'a': 'é'}),
